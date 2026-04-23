@@ -97,10 +97,10 @@ func TestRenderHost_HappyPath(t *testing.T) {
 	}
 
 	rep := HostReport{
-		Host:  "t5",
-		Label: "Прод-T5",
-		TZ:    "Europe/Moscow",
-		Window: Window{From: from, To: to},
+		Host:           "t5",
+		Label:          "Прод-T5",
+		TZ:             "Europe/Moscow",
+		Window:         Window{From: from, To: to},
 		GeneratedAt:    mustTime(time.RFC3339, "2026-04-23T05:01:00Z"),
 		TotalError:     420,
 		TotalCritical:  12,

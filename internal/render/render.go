@@ -34,22 +34,22 @@ type IncidentView struct {
 
 // HostReport — входные данные per-host шаблона.
 type HostReport struct {
-	Host            string
-	Label           string // optional человекочитаемое имя (host_labels в YAML)
-	TZ              string
-	Window          Window
-	GeneratedAt     time.Time
-	TotalError      uint64
-	TotalCritical   uint64
-	TotalRecords    uint64
-	TotalIncidents  int
-	AppTotals       []dedup.AppTotals
-	TopIncidents    []IncidentView
-	BelowIncidents  []IncidentView
-	BelowRecords    uint64
-	TopN            int
-	NoiseK          int
-	HostDeeplink    string // «все логи за окно по хосту»
+	Host           string
+	Label          string // optional человекочитаемое имя (host_labels в YAML)
+	TZ             string
+	Window         Window
+	GeneratedAt    time.Time
+	TotalError     uint64
+	TotalCritical  uint64
+	TotalRecords   uint64
+	TotalIncidents int
+	AppTotals      []dedup.AppTotals
+	TopIncidents   []IncidentView
+	BelowIncidents []IncidentView
+	BelowRecords   uint64
+	TopN           int
+	NoiseK         int
+	HostDeeplink   string // «все логи за окно по хосту»
 }
 
 type Window struct {
@@ -59,10 +59,10 @@ type Window struct {
 
 // CoverHostRow — одна строка таблицы хостов в cover.
 type CoverHostRow struct {
-	Host           string
-	TotalError     uint64
-	TotalCritical  uint64
-	TopApp         string // имя приложения с максимальным count в этом хосте
+	Host          string
+	TotalError    uint64
+	TotalCritical uint64
+	TopApp        string // имя приложения с максимальным count в этом хосте
 }
 
 // CoverData — входные данные для cover-сообщения (FR-6).
