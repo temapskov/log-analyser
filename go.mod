@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/kelseyhightower/envconfig v1.4.0
+	github.com/robfig/cron/v3 v3.0.1
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.49.1
 )

@@ -29,6 +29,7 @@ import (
 	"github.com/QCoreTech/log_analyser/internal/observability/logging"
 	"github.com/QCoreTech/log_analyser/internal/pipeline"
 	"github.com/QCoreTech/log_analyser/internal/render"
+	"github.com/QCoreTech/log_analyser/internal/scheduler"
 	"github.com/QCoreTech/log_analyser/internal/state"
 	"github.com/QCoreTech/log_analyser/internal/telegram"
 	"github.com/QCoreTech/log_analyser/internal/version"
@@ -113,21 +114,55 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 
+	loc, err := time.LoadLocation(cfg.TZ)
+	if err != nil {
+		fmt.Fprintf(stderr, "TZ: %v\n", err)
+		return exitConfig
+	}
+
+	pipe, st, err := buildPipeline(cfg, loc, logger)
+	if err != nil {
+		fmt.Fprintf(stderr, "init pipeline: %v\n", err)
+		return exitRuntime
+	}
+	if st != nil {
+		defer st.Close()
+	}
+
+	sched, err := scheduler.New(scheduler.Config{
+		Schedule:   cfg.ScheduleCron,
+		TZ:         loc,
+		RunTimeout: 15 * time.Minute,
+	}, pipe, logger)
+	if err != nil {
+		fmt.Fprintf(stderr, "scheduler init: %v\n", err)
+		return exitConfig
+	}
+	if err := sched.Start(); err != nil {
+		fmt.Fprintf(stderr, "scheduler start: %v\n", err)
+		return exitRuntime
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	logger.Info("daemon starting",
+	logger.Info("daemon started",
 		slog.String("version", version.Version),
 		slog.String("commit", version.Commit),
 		slog.String("schedule", cfg.ScheduleCron),
 		slog.String("tz", cfg.TZ),
 		slog.String("hosts", strings.Join(cfg.Hosts, ",")),
+		slog.Time("next_run", sched.NextSchedule()),
 	)
 
-	// TODO(feat/scheduler): подключить cron + pipeline.Run().
-	// Сейчас daemon просто ждёт SIGINT/SIGTERM — проверяется graceful shutdown.
 	<-ctx.Done()
-	logger.Info("daemon stopped", slog.String("reason", ctx.Err().Error()))
+	logger.Info("daemon stopping", slog.String("reason", ctx.Err().Error()))
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+	if err := sched.Stop(shutdownCtx); err != nil {
+		logger.Warn("scheduler stop error", slog.String("err", err.Error()))
+	}
+	logger.Info("daemon stopped")
 	return exitOK
 }
 
