@@ -1,0 +1,57 @@
+# Binaries
+/bin/
+/build/
+/dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go toolchain artefacts
+*.test
+*.out
+*.prof
+coverage.txt
+coverage.html
+
+# Vendored modules not used by default
+/vendor/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Secrets & local config
+.env
+.env.*
+!.env.example
+*.local.yaml
+*.local.yml
+config.local.*
+secrets/
+
+# Local state (daemon accumulated errors, sqlite, etc.)
+/data/
+/state/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite-journal
+
+# Generated reports
+/reports/
+!/reports/.gitkeep
+
+# Docker build cache
+.docker/
+
+# Logs
+*.log
+/logs/
+
+# Claude Code / tooling
+.claude/settings.local.json
+.planning/local/
