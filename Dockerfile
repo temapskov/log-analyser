@@ -6,7 +6,7 @@
 # =============================================================================
 
 # -------- Stage 1: builder ---------------------------------------------------
-FROM --platform=${BUILDPLATFORM} golang:1.22-alpine AS builder
+FROM --platform=${BUILDPLATFORM} golang:1.25-alpine AS builder
 
 # Args, которые buildx прокидывает автоматически
 ARG TARGETOS

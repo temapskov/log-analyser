@@ -1,6 +1,6 @@
 # =============================================================================
 #  golangci-lint v2 config
-#  Go 1.22, strict but practical. См. docs/plans/12-devops.md §6.1, §12.
+#  Go 1.25, strict but practical. См. docs/plans/12-devops.md §6.1, §12.
 #  Проверка: `golangci-lint run` локально и в CI (ci.yml job `lint`).
 # =============================================================================
 version: "2"
@@ -9,7 +9,7 @@ run:
   timeout: 5m
   tests: true
   concurrency: 4
-  go: "1.22"
+  go: "1.25"
   # Сборочные теги для integration/e2e (если используются)
   build-tags:
     - integration
@@ -46,10 +46,6 @@ linters:
     - unparam
     - prealloc
     - nolintlint      # проверяем, что //nolint-директивы корректны
-
-    # Стиль импортов
-    - goimports
-    - gci
 
   settings:
     errcheck:
@@ -108,39 +104,47 @@ linters:
         - fieldalignment  # слишком педантично для DTO
         - shadow          # spam
 
+    exhaustive:
+      default-signifies-exhaustive: true
+
+  # v2: exclusions живут ПОД linters, не на корне (в v1 было иначе).
+  exclusions:
+    generated: strict
+    presets:
+      - comments
+      - std-error-handling
+      - common-false-positives
+    rules:
+      # В тестах разрешаем длинные функции, блокирующие Close, errcheck
+      - path: _test\.go
+        linters:
+          - gocyclo
+          - errcheck
+          - dupl
+          - gosec
+          - gocritic
+          - unparam
+      # Шаблоны и embed.FS генераторы
+      - path: internal/render/templates/
+        linters:
+          - lll
+
+# v2: gci и goimports переехали из linters в отдельный formatters-блок.
+formatters:
+  enable:
+    - gofmt
+    - goimports
+    - gci
+  settings:
     gci:
       sections:
         - standard
         - default
         - prefix(github.com/QCoreTech/log_analyser)
       custom-order: true
-
     goimports:
-      local-prefixes: github.com/QCoreTech/log_analyser
-
-    exhaustive:
-      default-signifies-exhaustive: true
-
-exclusions:
-  generated: strict
-  presets:
-    - comments
-    - std-error-handling
-    - common-false-positives
-  rules:
-    # В тестах разрешаем длинные функции, блокирующие Close, errcheck
-    - path: _test\.go
-      linters:
-        - gocyclo
-        - errcheck
-        - dupl
-        - gosec
-        - gocritic
-        - unparam
-    # Шаблоны и embed.FS генераторы
-    - path: internal/render/templates/
-      linters:
-        - lll
+      local-prefixes:
+        - github.com/QCoreTech/log_analyser
 
 output:
   formats:
