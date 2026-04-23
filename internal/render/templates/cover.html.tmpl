@@ -1,0 +1,19 @@
+<b>Ежедневный отчёт об ошибках торговых серверов</b>
+<b>Период:</b> {{fmtTimeRU .Window.From}} — {{fmtTimeRU .Window.To}} ({{.TZ}})
+
+<b>Итог по серверам:</b>
+<pre>
+{{- printf "%-10s %6s %6s  %s" "host" "error" "crit" "top-app" }}
+{{range .Hosts -}}
+{{printf "%-10s %6d %6d  %s" .Host .TotalError .TotalCritical (htmlEsc .TopApp) }}
+{{end -}}
+</pre>
+
+<b>Всего:</b> {{.TotalError}} error, {{.TotalCritical}} critical
+<b>Уникальных инцидентов:</b> {{.TotalIncidents}}
+
+<a href="{{.AllHostsDeeplink}}">Открыть все за сутки в Grafana →</a>
+
+{{if .PartialDelivery -}}
+<i>[partial-report] один или несколько хостов не были собраны, детали — в логах daemon'а.</i>
+{{- end}}

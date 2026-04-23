@@ -200,6 +200,34 @@ func TestAggregator_IncidentsFor_ReturnsCopies(t *testing.T) {
 	}
 }
 
+func TestAggregator_AppTotals(t *testing.T) {
+	agg := NewAggregator(DefaultNormalizer(), 1)
+	ts := time.Now().UTC()
+	// app "a": 5×error + 2×critical
+	for i := 0; i < 5; i++ {
+		agg.Add(makeEntry("t5", "a", "error", "m", "E"+fmt.Sprint(i), ts))
+	}
+	for i := 0; i < 2; i++ {
+		agg.Add(makeEntry("t5", "a", "critical", "m", "C"+fmt.Sprint(i), ts))
+	}
+	// app "b": 3×error
+	for i := 0; i < 3; i++ {
+		agg.Add(makeEntry("t5", "b", "error", "m", "B"+fmt.Sprint(i), ts))
+	}
+
+	tot := agg.AppTotalsFor("t5")
+	if len(tot) != 2 {
+		t.Fatalf("apps: got=%d want=2", len(tot))
+	}
+	// "a" должен быть первым — Total=7 > 3
+	if tot[0].App != "a" || tot[0].Error != 5 || tot[0].Critical != 2 || tot[0].Total != 7 {
+		t.Errorf("tot[0]: %+v", tot[0])
+	}
+	if tot[1].App != "b" || tot[1].Error != 3 || tot[1].Total != 3 {
+		t.Errorf("tot[1]: %+v", tot[1])
+	}
+}
+
 func TestLevelRank(t *testing.T) {
 	if !(levelRank("critical") > levelRank("error")) {
 		t.Error("critical > error")

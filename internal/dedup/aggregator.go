@@ -167,6 +167,48 @@ func (a *Aggregator) SummaryFor(host string, noiseK int) Summary {
 	return s
 }
 
+// AppTotals — строка таблицы «по приложениям» в отчёте.
+type AppTotals struct {
+	App      string
+	Error    uint64
+	Critical uint64
+	Total    uint64
+}
+
+// AppTotalsFor агрегирует count по уровню внутри App (host фиксирован).
+// Результат отсортирован по Total убыв., App возр.
+func (a *Aggregator) AppTotalsFor(host string) []AppTotals {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	byFP := a.byHost[host]
+	acc := map[string]*AppTotals{}
+	for _, inc := range byFP {
+		t, ok := acc[inc.App]
+		if !ok {
+			t = &AppTotals{App: inc.App}
+			acc[inc.App] = t
+		}
+		t.Total += inc.Count
+		switch inc.Level {
+		case "critical":
+			t.Critical += inc.Count
+		case "error":
+			t.Error += inc.Count
+		}
+	}
+	out := make([]AppTotals, 0, len(acc))
+	for _, v := range acc {
+		out = append(out, *v)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Total != out[j].Total {
+			return out[i].Total > out[j].Total
+		}
+		return out[i].App < out[j].App
+	})
+	return out
+}
+
 // Hosts — список всех хостов, где была хоть одна запись.
 func (a *Aggregator) Hosts() []string {
 	a.mu.Lock()
