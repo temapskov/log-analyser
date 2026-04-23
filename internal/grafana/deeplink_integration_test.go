@@ -16,6 +16,7 @@ package grafana
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -51,10 +52,14 @@ func TestExploreURL_Integration_HEAD(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, u, nil)
+	// GET, а не HEAD: Grafana за своим nginx иногда рвёт соединение на HEAD
+	// (observed 2026-04-23: "HTTP/1.x transport connection broken:
+	// unexpected EOF"). Body всё равно выбрасываем.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		t.Fatalf("new req: %v", err)
 	}
+	req.Header.Set("Accept", "text/html")
 	if tok := os.Getenv("GRAFANA_TOKEN"); tok != "" {
 		req.Header.Set("Authorization", "Bearer "+tok)
 	}
@@ -70,9 +75,11 @@ func TestExploreURL_Integration_HEAD(t *testing.T) {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		t.Fatalf("HEAD %s: %v", u, err)
+		t.Fatalf("GET %s: %v", u, err)
 	}
 	defer resp.Body.Close()
+	// Для надёжного keep-alive выгребаем и выбрасываем тело.
+	_, _ = io.Copy(io.Discard, resp.Body)
 
 	switch resp.StatusCode {
 	case http.StatusOK,
