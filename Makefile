@@ -18,7 +18,7 @@ LDFLAGS := -s -w \
   -X github.com/QCoreTech/log_analyser/internal/version.BuildDate=$(BUILD_DATE)
 
 # ---- Цели -----------------------------------------------------------------
-.PHONY: help build run test test-race cover lint fmt vet tidy clean docker
+.PHONY: help build run test test-race test-integration cover lint fmt vet tidy clean docker
 
 help: ## Показать доступные цели
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -37,6 +37,10 @@ test: ## Запустить unit-тесты
 test-race: ## Тесты с -race и coverage
 	@go test $(GOFLAGS) -race -covermode=atomic -coverprofile=$(COVERAGE) $(PKG_ALL)
 	@go tool cover -func=$(COVERAGE) | tail -1
+
+test-integration: ## Integration-тесты против реальных VL/Grafana (читает .env)
+	@test -f .env || { echo '.env не найден — нужны GRAFANA_URL/UID/TYPE и т.п.' >&2; exit 1; }
+	@set -a; . ./.env; set +a; go test $(GOFLAGS) -tags=integration -count=1 -race -run Integration $(PKG_ALL)
 
 cover: test-race ## Открыть HTML-отчёт покрытия
 	@go tool cover -html=$(COVERAGE)
