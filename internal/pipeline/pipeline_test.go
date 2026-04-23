@@ -20,6 +20,7 @@ import (
 	"github.com/QCoreTech/log_analyser/internal/grafana"
 	"github.com/QCoreTech/log_analyser/internal/httpclient"
 	"github.com/QCoreTech/log_analyser/internal/render"
+	"github.com/QCoreTech/log_analyser/internal/state"
 	"github.com/QCoreTech/log_analyser/internal/telegram"
 )
 
@@ -292,6 +293,87 @@ func TestRun_WindowValidation(t *testing.T) {
 	if err == nil {
 		t.Fatal("ожидали ошибку на обратное окно")
 	}
+}
+
+// TestRun_Idempotent_SkipsDuplicate проверяет FR-12: повторный Run на то же
+// окно не шлёт cover повторно, если state-store подключён.
+func TestRun_Idempotent_SkipsDuplicate(t *testing.T) {
+	vl := makeVLServer(t)
+	defer vl.Close()
+	calls := &tgCalls{}
+	tg := makeTGServer(t, calls)
+	defer tg.Close()
+
+	hc := httpclient.New(httpclient.Config{Timeout: 5 * time.Second}, nil)
+	vlClient, err := collector.New(collector.Config{BaseURL: vl.URL}, hc, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tgClient, err := telegram.New(telegram.Config{Token: "tok", APIBase: tg.URL}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rdr, err := render.New("Europe/Moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := state.Open(state.Config{Path: ":memory:"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	loc, _ := time.LoadLocation("Europe/Moscow")
+	p, err := New(Config{
+		Hosts:  []string{"t1", "t5"},
+		Levels: []string{"error", "critical"},
+		NoiseK: 1, TopN: 10, MaxExamples: 3,
+		ReportsDir: t.TempDir(), ReportExt: "md",
+		TZ:     loc,
+		ChatID: -100,
+	}, Dependencies{
+		VL: vlClient, TG: tgClient, Renderer: rdr, State: st,
+		Grafana: grafana.Config{BaseURL: "http://g", OrgID: 1, DSUID: "u", DSType: "vl"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Детерминированные точки окна, чтобы второй Run бил в то же самое.
+	from := time.Unix(1000000, 0).UTC()
+	to := time.Unix(1003600, 0).UTC()
+
+	// Первый Run — реальный, cover + files.
+	res1, err := p.Run(context.Background(), Window{From: from, To: to})
+	if err != nil {
+		t.Fatalf("Run1: %v", err)
+	}
+	if res1.CoverMsgID != 100 {
+		t.Errorf("cover msg 1: %d", res1.CoverMsgID)
+	}
+
+	// Сбросим счётчики TG-мока и повторим — cover НЕ должен отправиться.
+	calls.mu.Lock()
+	calls.cover = nil
+	calls.mediaFiles = map[string]string{}
+	calls.sendDocs = nil
+	calls.mu.Unlock()
+
+	res2, err := p.Run(context.Background(), Window{From: from, To: to})
+	if err != nil {
+		t.Fatalf("Run2: %v", err)
+	}
+	if res2.CoverMsgID != 0 {
+		t.Errorf("идемпотентный Run не должен отправлять cover, got id=%d", res2.CoverMsgID)
+	}
+	calls.mu.Lock()
+	if calls.cover != nil {
+		t.Errorf("TG sendMessage вызвался повторно: %v", calls.cover)
+	}
+	if len(calls.mediaFiles) > 0 || len(calls.sendDocs) > 0 {
+		t.Errorf("TG send*Document вызвался повторно")
+	}
+	calls.mu.Unlock()
 }
 
 func TestRun_FilenameFormat(t *testing.T) {

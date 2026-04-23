@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -28,6 +29,7 @@ import (
 	"github.com/QCoreTech/log_analyser/internal/observability/logging"
 	"github.com/QCoreTech/log_analyser/internal/pipeline"
 	"github.com/QCoreTech/log_analyser/internal/render"
+	"github.com/QCoreTech/log_analyser/internal/state"
 	"github.com/QCoreTech/log_analyser/internal/telegram"
 	"github.com/QCoreTech/log_analyser/internal/version"
 )
@@ -169,10 +171,13 @@ func cmdOnce(args []string, stdout, stderr io.Writer) int {
 		slog.String("hosts", strings.Join(cfg.Hosts, ",")),
 	)
 
-	pipe, err := buildPipeline(cfg, loc, logger)
+	pipe, st, err := buildPipeline(cfg, loc, logger)
 	if err != nil {
 		fmt.Fprintf(stderr, "init pipeline: %v\n", err)
 		return exitRuntime
+	}
+	if st != nil {
+		defer st.Close()
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
@@ -270,14 +275,14 @@ func buildClients(cfg *config.Config, logger *slog.Logger) (*collector.Client, *
 	return vl, tg, nil
 }
 
-func buildPipeline(cfg *config.Config, loc *time.Location, logger *slog.Logger) (*pipeline.Pipeline, error) {
+func buildPipeline(cfg *config.Config, loc *time.Location, logger *slog.Logger) (*pipeline.Pipeline, *state.Store, error) {
 	vl, tg, err := buildClients(cfg, logger)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	rdr, err := render.New(cfg.TZ)
 	if err != nil {
-		return nil, fmt.Errorf("renderer: %w", err)
+		return nil, nil, fmt.Errorf("renderer: %w", err)
 	}
 
 	// Компиляция fingerprint-правил из YAML overlay или дефолтный набор.
@@ -289,7 +294,7 @@ func buildPipeline(cfg *config.Config, loc *time.Location, logger *slog.Logger) 
 		}
 		rules, err = dedup.Compile(raw)
 		if err != nil {
-			return nil, fmt.Errorf("fingerprint profile: %w", err)
+			return nil, nil, fmt.Errorf("fingerprint profile: %w", err)
 		}
 		logger.Info("загружен fingerprint-профиль из YAML", slog.Int("rules", len(rules)))
 	} else {
@@ -297,7 +302,23 @@ func buildPipeline(cfg *config.Config, loc *time.Location, logger *slog.Logger) 
 		logger.Info("используется встроенный fingerprint-профиль", slog.Int("rules", len(rules)))
 	}
 
-	return pipeline.New(pipeline.Config{
+	// State — опциональный. Если путь задан и директория доступна,
+	// подключаем SQLite для FR-12 идемпотентности.
+	var st *state.Store
+	if cfg.StateDBPath != "" {
+		if err := os.MkdirAll(filepath.Dir(cfg.StateDBPath), 0o755); err != nil {
+			return nil, nil, fmt.Errorf("mkdir state dir: %w", err)
+		}
+		st, err = state.Open(state.Config{Path: cfg.StateDBPath, Timezone: "UTC"}, logger)
+		if err != nil {
+			return nil, nil, fmt.Errorf("state.Open: %w", err)
+		}
+		logger.Info("state открыт", slog.String("path", cfg.StateDBPath))
+	} else {
+		logger.Warn("STATE_DB_PATH не задан — идемпотентность отключена")
+	}
+
+	pipe, err := pipeline.New(pipeline.Config{
 		Hosts:            cfg.Hosts,
 		Levels:           cfg.Levels,
 		NoiseK:           cfg.NoiseK,
@@ -314,6 +335,7 @@ func buildPipeline(cfg *config.Config, loc *time.Location, logger *slog.Logger) 
 		VL:       vl,
 		TG:       tg,
 		Renderer: rdr,
+		State:    st,
 		Grafana: grafana.Config{
 			BaseURL: cfg.GrafanaURL,
 			OrgID:   cfg.GrafanaOrgID,
@@ -322,6 +344,13 @@ func buildPipeline(cfg *config.Config, loc *time.Location, logger *slog.Logger) 
 		},
 		Logger: logger,
 	})
+	if err != nil {
+		if st != nil {
+			_ = st.Close()
+		}
+		return nil, nil, err
+	}
+	return pipe, st, nil
 }
 
 // loadConfigAndLogger — общая инициализация для всех команд, кроме version/help.

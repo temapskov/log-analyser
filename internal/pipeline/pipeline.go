@@ -24,6 +24,7 @@ import (
 	"github.com/QCoreTech/log_analyser/internal/dedup"
 	"github.com/QCoreTech/log_analyser/internal/grafana"
 	"github.com/QCoreTech/log_analyser/internal/render"
+	"github.com/QCoreTech/log_analyser/internal/state"
 	"github.com/QCoreTech/log_analyser/internal/telegram"
 )
 
@@ -49,7 +50,10 @@ type Dependencies struct {
 	TG       *telegram.Client
 	Grafana  grafana.Config
 	Renderer *render.Renderer
-	Logger   *slog.Logger
+	// State — опционально; если nil, идемпотентность (FR-12) НЕ
+	// обеспечивается (повторный Run на одно окно отправит дубль).
+	State  *state.Store
+	Logger *slog.Logger
 }
 
 // Pipeline — immutable после New.
@@ -130,6 +134,29 @@ func (p *Pipeline) Run(ctx context.Context, window Window) (*Result, error) {
 	if !window.From.Before(window.To) {
 		return nil, fmt.Errorf("window From (%s) must be < To (%s)",
 			window.From.Format(time.RFC3339), window.To.Format(time.RFC3339))
+	}
+
+	// Идемпотентность через state (FR-12). Если store не задан — пропускаем
+	// (режим `once` для оператора, осознанная потеря idempotency).
+	var runID string
+	if p.deps.State != nil {
+		id, resumed, err := p.deps.State.BeginRun(ctx, window.From, window.To)
+		if errors.Is(err, state.ErrAlreadyDelivered) {
+			p.deps.Logger.Info("digest за окно уже доставлен — пропуск",
+				slog.String("run_id", id),
+				slog.Time("from", window.From),
+				slog.Time("to", window.To),
+			)
+			return &Result{Window: window, PerHost: map[string]HostResult{}}, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("state BeginRun: %w", err)
+		}
+		runID = id
+		if resumed {
+			p.deps.Logger.Info("возобновляем незавершённый run",
+				slog.String("run_id", runID))
+		}
 	}
 
 	rules := p.cfg.FingerprintRules
@@ -332,26 +359,57 @@ func (p *Pipeline) Run(ctx context.Context, window Window) (*Result, error) {
 	})
 	if err != nil {
 		closeAttachments(attachments)
+		p.markFailed(ctx, runID, fmt.Sprintf("cover: %v", err))
 		return res, fmt.Errorf("send cover: %w", err)
 	}
 	res.CoverMsgID = coverMsg.MessageID
+	if runID != "" && p.deps.State != nil {
+		if err := p.deps.State.MarkCoverSent(ctx, runID, coverMsg.MessageID); err != nil {
+			p.deps.Logger.Warn("state MarkCoverSent failed",
+				slog.String("err", err.Error()))
+		}
+	}
 
 	// 4. Media group (или fallback).
 	msgs, err := p.sendFiles(ctx, attachments)
 	closeAttachments(attachments)
 	if err != nil {
+		p.markFailed(ctx, runID, fmt.Sprintf("files: %v", err))
 		return res, fmt.Errorf("send files: %w", err)
 	}
 	for _, m := range msgs {
 		res.MediaMsgIDs = append(res.MediaMsgIDs, m.MessageID)
 	}
 
+	if runID != "" && p.deps.State != nil {
+		if err := p.deps.State.FinishRun(ctx, runID, len(msgs)); err != nil {
+			p.deps.Logger.Warn("state FinishRun failed",
+				slog.String("err", err.Error()))
+		}
+	}
+
 	p.deps.Logger.Info("digest cycle ok",
+		slog.String("run_id", runID),
 		slog.Int64("cover_msg_id", coverMsg.MessageID),
 		slog.Int("files", len(attachments)),
 		slog.Int("partial_errors", len(partial)),
 	)
 	return res, nil
+}
+
+// markFailed — запись status=failed в state. Безопасна при nil-State/пустом runID.
+func (p *Pipeline) markFailed(ctx context.Context, runID, msg string) {
+	if runID == "" || p.deps.State == nil {
+		return
+	}
+	// Используем фоновый контекст: даже если caller'ский ctx отменён,
+	// мы хотим записать причину фейла.
+	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = ctx // ctx тут справочно
+	if err := p.deps.State.FailRun(bg, runID, msg); err != nil {
+		p.deps.Logger.Warn("state FailRun failed", slog.String("err", err.Error()))
+	}
 }
 
 // sendFiles пробует sendMediaGroup; если документов меньше 2 или TG вернул
