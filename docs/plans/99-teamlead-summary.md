@@ -38,15 +38,34 @@ Go 1.22+ • SQLite WAL на pure-Go драйвере `modernc.org/sqlite` • s
 
 ## 2. Блокеры OQ — требуют решения TL **до старта кода**
 
-| OQ | Вопрос | Кому адресовано | Блокирует |
-|----|--------|-----------------|-----------|
-| **OQ-1** | URL VictoriaLogs (prod read-only) + схема авторизации (basic / bearer / mTLS / без auth). | TL → SRE | v0.1 collector |
-| **OQ-3** | Grafana base URL, `orgId`, **UID datasource VictoriaLogs** и точный `type` плагина (`victoriametrics-logs-datasource` или legacy `victorialogs`). | TL → Grafana-admin | v0.1 deeplinks (без UID deeplinks не соберутся) |
-| **OQ-4** | Формат файла отчёта — **`.md` по умолчанию**, подтвердить. Опции `.html` / `.txt` опциональны. | TL, dev-consumers | v0.1 renderer |
-| **OQ-5** | Поля `host` / `app` / `level` в VL — это **поля стрима** (как пишет автор issue) или обычные поля логов? Сильно влияет на perf (`{host="..."}` vs `host:=...`). | TL → SRE / VL-admin | v0.1 collector (perf) |
-| **OQ-8** | TG-доставка — один чат с прикреплёнными файлами, или отдельные **threads** в супергруппе (`message_thread_id`)? Второй вариант облегчит realtime в v0.2 (отдельный topic под алерты). | TL → продуктовый/IT | v0.1 delivery, v0.2 realtime |
+| OQ | Вопрос | Статус | Блокирует |
+|----|--------|--------|-----------|
+| **OQ-1** | URL VictoriaLogs + схема авторизации. | ✅ **Закрыт (2026-04-23):** VL находится внутри корпоративной сети, **авторизация не требуется**. `VL_URL` задаётся через env (см. `.env.example`); `VL_BASIC_USER` / `VL_BASIC_PASS` остаются пустыми. Daemon должен деплоиться в той же сети. | — |
+| **OQ-2** | Нужен ли прокси для исходящих запросов к VL? | ✅ **Закрыт (2026-04-23):** прокси для VL **не требуется** (VL в той же корпсети, что и сервис). `VL_PROXY_URL` остаётся в env как optional — не задаётся. | — |
+| **OQ-3** | Grafana base URL, `orgId`, **UID datasource VictoriaLogs**, `type` плагина. | 🟡 **Частично (2026-04-23):** у TL **есть доступ к Grafana API**, `orgId`/`uid`/`type` можно получить через `GET /api/datasources` — автоматически закроется в рамках `feat/grafana-deeplink`. URL Grafana — TL передаёт через env (`.env.local`, не коммитить). | v0.1 deeplinks (разблокируется при получении ответа API) |
+| **OQ-4** | Формат файла отчёта. | ✅ **Принято:** `.md` по умолчанию (подтверждено TL). Опции `.html` / `.txt` доступны через `REPORT_FORMAT`. | — |
+| **OQ-5** | Поля `host` / `app` / `level` — стрим или нет? | 🔴 **Открыт:** требует подтверждения от SRE/VL-admin. Preflight `/select/logsql/stream_field_names` при старте daemon снимет вопрос автоматически (см. R-10 в `00-analysis.md`). | v0.1 collector (perf) — не критично для старта разработки |
+| **OQ-8** | TG-доставка — один чат или threads? | 🔴 **Открыт:** требует решения. Предложение команды — один чат в v0.1, threads в v0.2 под realtime. | v0.1 delivery, v0.2 realtime |
 
-Остальные 10 OQ (OQ-2, 6, 7, 9–15) не блокируют старт v0.1 и будут закрываться по ходу — их адресаты и тайминг см. `docs/plans/00-analysis.md §9`.
+Остальные 10 OQ (OQ-6, 7, 9–15) не блокируют старт v0.1 и будут закрываться по ходу — их адресаты и тайминг см. `docs/plans/00-analysis.md §9`.
+
+### 2.1. Команда для получения Grafana datasource UID
+
+После получения URL Grafana и токена API, выполнить одну из команд (подставив значения):
+
+```bash
+# Bearer token (Service account / API key):
+curl -sS -H "Authorization: Bearer $GRAFANA_TOKEN" \
+  "$GRAFANA_URL/api/datasources" \
+  | jq '.[] | select(.type | test("victoria")) | {name, uid, type, url, orgId: (.orgId // 1)}'
+
+# Basic auth:
+curl -sS -u "$GRAFANA_USER:$GRAFANA_PASS" \
+  "$GRAFANA_URL/api/datasources" \
+  | jq '.[] | select(.type | test("victoria")) | {name, uid, type, url, orgId: (.orgId // 1)}'
+```
+
+Ожидаемый ответ — `uid` пропишется в env `GRAFANA_VL_DS_UID`, `type` — в `GRAFANA_VL_DS_TYPE` (обычно `victoriametrics-logs-datasource`).
 
 ## 3. Согласованные решения (консенсус всех ролей)
 
