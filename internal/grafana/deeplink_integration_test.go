@@ -67,8 +67,15 @@ func TestExploreURL_Integration_HEAD(t *testing.T) {
 	// Не следуем за редиректами: 302 на /login — валидный сигнал,
 	// что Grafana жива и URL-форма корректна (auth проверяется ДО
 	// рендера Explore).
+	//
+	// Transport.Proxy=nil: у разработчиков часто выставлен корпоративный
+	// HTTP_PROXY для внешнего трафика, но Grafana — внутри корпсети
+	// (10.x.x.x). Если идти через прокси, он странно обрабатывает длинные
+	// URL с JSON-параметрами и рвёт соединение («unexpected EOF»).
+	// В прод-daemon аналогичное ожидается через NO_PROXY в env.
 	client := &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout:   10 * time.Second,
+		Transport: &http.Transport{Proxy: nil},
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
