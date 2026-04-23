@@ -1,0 +1,198 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# =============================================================================
+#  GoReleaser v2+ — cross-compile + Docker multi-arch + GHCR + cosign + SBOM
+#  Запускается из .github/workflows/release.yml на тегах v*.*.*
+#  См. docs/plans/12-devops.md §6.2 и §7.
+# =============================================================================
+version: 2
+
+project_name: log-analyser
+
+before:
+  hooks:
+    - go mod tidy
+    - go mod download
+
+builds:
+  - id: log-analyser
+    main: ./cmd/log-analyser
+    binary: log-analyser
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .FullCommit }}
+      - -X main.date={{ .Date }}
+
+archives:
+  - id: default
+    # v2 дефолт — `formats: [tar.gz]`
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - CHANGELOG.md
+      - LICENSE*
+      - .env.example
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: "Новые фичи"
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: "Исправления"
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: "Производительность"
+      regexp: '^.*?perf(\([[:word:]]+\))??!?:.+$'
+      order: 2
+    - title: "Рефакторинг"
+      regexp: '^.*?refactor(\([[:word:]]+\))??!?:.+$'
+      order: 3
+    - title: "Сборка / CI / зависимости"
+      regexp: '^.*?(build|ci|chore)(\([[:word:]]+\))??!?:.+$'
+      order: 4
+    - title: "Документация"
+      regexp: '^.*?docs(\([[:word:]]+\))??!?:.+$'
+      order: 5
+    - title: "Прочее"
+      order: 999
+  filters:
+    exclude:
+      - '^test'
+      - '^style'
+      - 'Merge pull request'
+      - 'Merge branch'
+
+# ---- Docker images (per-arch) -----------------------------------------------
+# TODO(devops): при смене owner'а GHCR — поправить namespace "qcoretech"
+dockers:
+  - id: linux-amd64
+    image_templates:
+      - "ghcr.io/qcoretech/log_analyser:{{ .Version }}-amd64"
+      - "ghcr.io/qcoretech/log_analyser:v{{ .Major }}.{{ .Minor }}-amd64"
+    goos: linux
+    goarch: amd64
+    dockerfile: Dockerfile
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.source=https://github.com/QCoreTech/log_analyser"
+      - "--build-arg=VERSION={{ .Version }}"
+      - "--build-arg=COMMIT={{ .FullCommit }}"
+      - "--build-arg=DATE={{ .Date }}"
+
+  - id: linux-arm64
+    image_templates:
+      - "ghcr.io/qcoretech/log_analyser:{{ .Version }}-arm64"
+      - "ghcr.io/qcoretech/log_analyser:v{{ .Major }}.{{ .Minor }}-arm64"
+    goos: linux
+    goarch: arm64
+    dockerfile: Dockerfile
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.source=https://github.com/QCoreTech/log_analyser"
+      - "--build-arg=VERSION={{ .Version }}"
+      - "--build-arg=COMMIT={{ .FullCommit }}"
+      - "--build-arg=DATE={{ .Date }}"
+
+# ---- Multi-arch manifest lists ----------------------------------------------
+docker_manifests:
+  - name_template: "ghcr.io/qcoretech/log_analyser:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/qcoretech/log_analyser:{{ .Version }}-amd64"
+      - "ghcr.io/qcoretech/log_analyser:{{ .Version }}-arm64"
+
+  - name_template: "ghcr.io/qcoretech/log_analyser:v{{ .Major }}.{{ .Minor }}"
+    image_templates:
+      - "ghcr.io/qcoretech/log_analyser:{{ .Version }}-amd64"
+      - "ghcr.io/qcoretech/log_analyser:{{ .Version }}-arm64"
+
+  # latest — только для стабильных релизов без pre-release суффикса (-rc, -beta)
+  - name_template: "ghcr.io/qcoretech/log_analyser:latest"
+    image_templates:
+      - "ghcr.io/qcoretech/log_analyser:{{ .Version }}-amd64"
+      - "ghcr.io/qcoretech/log_analyser:{{ .Version }}-arm64"
+    skip_push: auto
+
+# ---- SBOM (Syft) ------------------------------------------------------------
+sboms:
+  - id: archive-sbom
+    artifacts: archive
+    documents:
+      - "{{ .ArtifactName }}.sbom.spdx.json"
+
+# ---- Cosign keyless signing -------------------------------------------------
+# Подпись и docker-манифестов, и архивов. OIDC id-token выдаётся workflow'ом.
+docker_signs:
+  - id: images
+    cmd: cosign
+    artifacts: manifests
+    output: true
+    args:
+      - "sign"
+      - "--yes"
+      - "${artifact}@${digest}"
+
+signs:
+  - id: checksum
+    cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - "sign-blob"
+      - "--yes"
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+    artifacts: checksum
+    output: true
+
+# ---- GitHub Release ---------------------------------------------------------
+release:
+  github:
+    owner: QCoreTech
+    name: log_analyser
+  draft: false
+  prerelease: auto
+  mode: replace
+  header: |
+    ## log_analyser {{ .Tag }}
+
+    Docker: `ghcr.io/qcoretech/log_analyser:{{ .Version }}` (linux/amd64, linux/arm64)
+
+    Проверка подписи:
+    ```bash
+    cosign verify ghcr.io/qcoretech/log_analyser:{{ .Version }} \
+      --certificate-identity-regexp '^https://github.com/QCoreTech/log_analyser' \
+      --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
+    ```
+  footer: |
+    **Полный changelog:** https://github.com/QCoreTech/log_analyser/compare/{{ .PreviousTag }}...{{ .Tag }}

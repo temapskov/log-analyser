@@ -1,0 +1,64 @@
+# =============================================================================
+#  Trivy: сканирование опубликованного образа после release
+#  Не блокирует релиз, SARIF -> GitHub Security tab.
+#  См. docs/plans/12-devops.md §6.6.
+# =============================================================================
+name: trivy
+
+on:
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Полный image ref (ghcr.io/qcoretech/log_analyser:TAG)"
+        required: true
+        default: "ghcr.io/qcoretech/log_analyser:latest"
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  scan:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve image ref
+        id: ref
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "image=${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            # После release — сканируем :latest (manifest list)
+            echo "image=ghcr.io/qcoretech/log_analyser:latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run Trivy (image)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ steps.ref.outputs.image }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: "HIGH,CRITICAL"
+          ignore-unfixed: true
+          vuln-type: "os,library"
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-image
+
+      - name: Trivy summary (fs, non-blocking)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: table
+          severity: "HIGH,CRITICAL"
+          ignore-unfixed: true
+          exit-code: "0"

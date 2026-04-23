@@ -1,0 +1,36 @@
+# =============================================================================
+#  stale: автозакрытие stale issues/PR
+#  Опционально, см. docs/plans/12-devops.md §6.5.
+# =============================================================================
+name: stale
+
+on:
+  schedule:
+    - cron: "30 3 * * *"
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  stale:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/stale@v9
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          days-before-stale: 30
+          days-before-close: 14
+          stale-issue-label: "stale"
+          stale-pr-label: "stale"
+          exempt-issue-labels: "pinned,security,blocked,release"
+          exempt-pr-labels: "pinned,security,blocked,release"
+          stale-issue-message: |
+            Этот issue помечен как stale — нет активности 30 дней. Будет закрыт через 14 дней, если не появится комментарий.
+          stale-pr-message: |
+            Этот PR помечен как stale — нет активности 30 дней. Будет закрыт через 14 дней, если не появится активность.
+          close-issue-message: |
+            Закрыт автоматически как stale. Откройте заново, если задача актуальна.
+          close-pr-message: |
+            Закрыт автоматически как stale. Откройте новый PR, если изменения актуальны.
+          operations-per-run: 50

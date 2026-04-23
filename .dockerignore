@@ -1,0 +1,55 @@
+# VCS / CI
+.git
+.github
+.gitignore
+.gitattributes
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+.DS_Store
+
+# Docs (не нужно в build context — ускоряет)
+docs
+README.md
+CHANGELOG.md
+CLAUDE.md
+LICENSE
+
+# Local env / secrets
+.env
+.env.*
+!.env.example
+*.local.yaml
+*.local.yml
+secrets
+
+# Test artefacts
+*.test
+*.out
+*.prof
+coverage.txt
+coverage.html
+tests/fixtures/huge-*
+
+# Build outputs
+bin
+build
+dist
+/vendor
+
+# State / reports (местные dev-данные)
+data
+state
+reports
+*.db
+*.db-journal
+*.sqlite
+*.sqlite-journal
+
+# Tooling
+.docker
+.claude
+.planning

@@ -1,0 +1,154 @@
+# =============================================================================
+#  golangci-lint v2 config
+#  Go 1.22, strict but practical. См. docs/plans/12-devops.md §6.1, §12.
+#  Проверка: `golangci-lint run` локально и в CI (ci.yml job `lint`).
+# =============================================================================
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  concurrency: 4
+  go: "1.22"
+  # Сборочные теги для integration/e2e (если используются)
+  build-tags:
+    - integration
+
+linters:
+  # standard = стабильный дефолт команды golangci-lint. Дополняем нужным нам.
+  default: standard
+  enable:
+    # Корректность / безопасность
+    - errcheck        # пропущенные err
+    - govet           # всегда ON
+    - staticcheck     # SA/ST/QF checks
+    - ineffassign     # неиспользованные присваивания
+    - unused          # неиспользуемые символы
+    - gosec           # sec-антипаттерны
+    - errorlint       # %w vs %v, нестандартный errors.Is/As
+    - bodyclose       # http.Response.Body.Close
+    - noctx           # http.Request без context — ловим именно для VL-клиента
+    - contextcheck    # пробрасывание ctx
+    - nilerr          # return nil err; if err != nil
+    - rowserrcheck    # sql.Rows.Err после итерации
+    - sqlclosecheck   # sql.*.Close
+    - durationcheck   # time.Duration * time.Duration
+    - makezero        # make([]T, n) + append
+    - exhaustive      # switch по enum
+    - gocheckcompilerdirectives
+
+    # Качество / читаемость
+    - misspell
+    - gocyclo
+    - gocritic
+    - revive          # более настраиваемая альтернатива golint
+    - unconvert
+    - unparam
+    - prealloc
+    - nolintlint      # проверяем, что //nolint-директивы корректны
+
+    # Стиль импортов
+    - goimports
+    - gci
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+      exclude-functions:
+        - (io.Closer).Close
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+
+    gocyclo:
+      min-complexity: 15
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+      disabled-checks:
+        - ifElseChain
+        - singleCaseSwitch
+
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: early-return
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: exported
+        - name: var-naming
+        - name: indent-error-flow
+        - name: time-naming
+        - name: unexported-return
+        - name: unnecessary-stmt
+        - name: unreachable-code
+        - name: unused-parameter
+
+    gosec:
+      excludes:
+        # G304 — читаем конфиг по пути из env, это ОК
+        - G304
+
+    staticcheck:
+      checks:
+        - all
+        - -ST1000   # package comment — не требуем во всех пакетах
+        - -ST1020   # doc comment для exported — не жёстко
+
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment  # слишком педантично для DTO
+        - shadow          # spam
+
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/QCoreTech/log_analyser)
+      custom-order: true
+
+    goimports:
+      local-prefixes: github.com/QCoreTech/log_analyser
+
+    exhaustive:
+      default-signifies-exhaustive: true
+
+exclusions:
+  generated: strict
+  presets:
+    - comments
+    - std-error-handling
+    - common-false-positives
+  rules:
+    # В тестах разрешаем длинные функции, блокирующие Close, errcheck
+    - path: _test\.go
+      linters:
+        - gocyclo
+        - errcheck
+        - dupl
+        - gosec
+        - gocritic
+        - unparam
+    # Шаблоны и embed.FS генераторы
+    - path: internal/render/templates/
+      linters:
+        - lll
+
+output:
+  formats:
+    text:
+      path: stdout
+      print-linter-name: true
+      colors: true
+  sort-order:
+    - linter
+    - severity
+    - file

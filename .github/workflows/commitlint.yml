@@ -1,0 +1,47 @@
+# =============================================================================
+#  commitlint: Conventional Commits на PR
+#  Проверяет: (1) каждый коммит PR, (2) title PR (для squash-merge).
+#  См. docs/plans/12-devops.md §2.3.
+# =============================================================================
+name: commitlint
+
+on:
+  pull_request:
+    branches: [master]
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  commits:
+    name: all commits in PR
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate commits
+        uses: wagoid/commitlint-github-action@v6
+        with:
+          configFile: commitlint.config.js
+          failOnWarnings: false
+          helpURL: https://github.com/QCoreTech/log_analyser/blob/master/docs/plans/12-devops.md#2-conventional-commits--commitlint
+
+  title:
+    name: PR title
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install commitlint
+        run: |
+          npm install --save-dev @commitlint/cli@19 @commitlint/config-conventional@19
+
+      - name: Validate PR title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          echo "$PR_TITLE" | npx commitlint --config commitlint.config.js
