@@ -1,0 +1,47 @@
+# Regex-профиль нормализации для dedup fingerprint (ADR-0009).
+#
+# Загружается через CONFIG_FILE=... — секция `fingerprint` кладётся
+# в config.Overlay.Fingerprint (см. internal/config/config.go).
+#
+# Отражает dedup.DefaultRawRules(). Здесь — только как пример/override:
+# в отсутствие YAML в коде по умолчанию используется тот же набор.
+#
+# Порядок критичен: timestamps → uuid → ip → hex16+ → numbers.
+# Числа идут последними, т.к. все предыдущие правила содержат цифры.
+
+fingerprint:
+  normalizers:
+    - name: ts_iso8601
+      pattern: '\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+\-]\d{2}:?\d{2})?'
+      replace: '<ts>'
+
+    # QCoreTech-формат в _msg: "23.04.2026 06:35:19.484087 +00:00".
+    - name: ts_ru
+      pattern: '\d{2}\.\d{2}\.\d{4}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:\s*[+\-]\d{2}:\d{2})?'
+      replace: '<ts>'
+
+    - name: uuid
+      pattern: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+      replace: '<uuid>'
+
+    # IPv4 с опциональным :port.
+    - name: ipv4
+      pattern: '\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b'
+      replace: '<ip>'
+
+    # 16+ hex-символов подряд: stream_id, order-id (OKX/Binance ~16..24 hex),
+    # sha1 и т.п.
+    - name: hex16plus
+      pattern: '\b[0-9a-fA-F]{16,}\b'
+      replace: '<hex>'
+
+    - name: numbers
+      pattern: '\b\d+(?:\.\d+)?\b'
+      replace: '<N>'
+
+# host_labels — опциональный override отображаемых имён серверов в отчётах.
+# Пример:
+# host_labels:
+#   t5: "Прод-T5"
+#   ali-t1: "Ali-T1 (Alibaba)"
+host_labels: {}
