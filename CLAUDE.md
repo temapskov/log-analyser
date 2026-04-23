@@ -106,10 +106,8 @@
 **Закрыто 2026-04-23:**
 - **OQ-1.** VictoriaLogs находится **внутри корпоративной сети, без auth**. `VL_BASIC_USER` / `VL_BASIC_PASS` не задаются; daemon должен работать в той же сети.
 - **OQ-2.** Прокси для VL **не требуется** (`VL_PROXY_URL` в env остаётся пустым).
+- **OQ-3.** Grafana API-доступ есть. UID `victoriametrics-logs-datasource` получен. Конкретные значения лежат в локальном `.env` (gitignored). В Grafana обнаружен дубликат VL-datasource с пустым URL — рекомендовано убрать.
 - **OQ-4.** Формат отчёта — `.md` по умолчанию.
-
-**Частично закрыто:**
-- **OQ-3.** Есть **доступ к Grafana API** (`GET /api/datasources`) — UID/type VictoriaLogs-datasource извлекаются автоматически при разработке `feat/grafana-deeplink`; см. команды в `docs/plans/99-teamlead-summary.md §2.1`.
 
 **Остаются открытыми:**
 - **OQ-5** (поля стрима в VL) — снимается preflight-чеком `stream_field_names` при старте daemon.
