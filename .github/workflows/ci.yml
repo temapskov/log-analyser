@@ -19,7 +19,7 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: "1.22"
+  GO_VERSION: "1.25"
   IMAGE_NAME: ghcr.io/qcoretech/log_analyser  # TODO(devops): подтвердить namespace
 
 jobs:
