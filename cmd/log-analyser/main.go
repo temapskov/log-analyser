@@ -26,7 +26,9 @@ import (
 	"github.com/QCoreTech/log_analyser/internal/dedup"
 	"github.com/QCoreTech/log_analyser/internal/grafana"
 	"github.com/QCoreTech/log_analyser/internal/httpclient"
+	"github.com/QCoreTech/log_analyser/internal/observability/httpd"
 	"github.com/QCoreTech/log_analyser/internal/observability/logging"
+	"github.com/QCoreTech/log_analyser/internal/observability/metrics"
 	"github.com/QCoreTech/log_analyser/internal/pipeline"
 	"github.com/QCoreTech/log_analyser/internal/render"
 	"github.com/QCoreTech/log_analyser/internal/scheduler"
@@ -120,7 +122,8 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		return exitConfig
 	}
 
-	pipe, st, err := buildPipeline(cfg, loc, logger)
+	mx := metrics.New(version.Version, version.Commit)
+	pipe, st, vl, tg, err := buildPipelineWithDeps(cfg, loc, logger, mx)
 	if err != nil {
 		fmt.Fprintf(stderr, "init pipeline: %v\n", err)
 		return exitRuntime
@@ -143,6 +146,26 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		return exitRuntime
 	}
 
+	obsSrv, err := httpd.New(httpd.Config{
+		Addr:    cfg.MetricsAddr,
+		Metrics: mx,
+		ReadyChecks: []httpd.ReadyCheck{
+			{Name: "vl", Check: vl.Ping},
+			{Name: "tg", Check: func(ctx context.Context) error {
+				_, err := tg.GetMe(ctx)
+				return err
+			}},
+		},
+	}, logger)
+	if err != nil {
+		fmt.Fprintf(stderr, "observability init: %v\n", err)
+		return exitConfig
+	}
+	if err := obsSrv.Start(); err != nil {
+		fmt.Fprintf(stderr, "observability start: %v\n", err)
+		return exitRuntime
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -161,6 +184,11 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 	if err := sched.Stop(shutdownCtx); err != nil {
 		logger.Warn("scheduler stop error", slog.String("err", err.Error()))
+	}
+	obsShutdown, cancelObs := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelObs()
+	if err := obsSrv.Shutdown(obsShutdown); err != nil {
+		logger.Warn("observability shutdown error", slog.String("err", err.Error()))
 	}
 	logger.Info("daemon stopped")
 	return exitOK
@@ -206,7 +234,7 @@ func cmdOnce(args []string, stdout, stderr io.Writer) int {
 		slog.String("hosts", strings.Join(cfg.Hosts, ",")),
 	)
 
-	pipe, st, err := buildPipeline(cfg, loc, logger)
+	pipe, st, _, _, err := buildPipelineWithDeps(cfg, loc, logger, nil)
 	if err != nil {
 		fmt.Fprintf(stderr, "init pipeline: %v\n", err)
 		return exitRuntime
@@ -310,14 +338,17 @@ func buildClients(cfg *config.Config, logger *slog.Logger) (*collector.Client, *
 	return vl, tg, nil
 }
 
-func buildPipeline(cfg *config.Config, loc *time.Location, logger *slog.Logger) (*pipeline.Pipeline, *state.Store, error) {
+// buildPipelineWithDeps — центральная сборка всех подсистем. Возвращает
+// также VL и TG клиенты для повторного использования (readyz, health).
+// mx опционален.
+func buildPipelineWithDeps(cfg *config.Config, loc *time.Location, logger *slog.Logger, mx *metrics.Metrics) (*pipeline.Pipeline, *state.Store, *collector.Client, *telegram.Client, error) {
 	vl, tg, err := buildClients(cfg, logger)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	rdr, err := render.New(cfg.TZ)
 	if err != nil {
-		return nil, nil, fmt.Errorf("renderer: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("renderer: %w", err)
 	}
 
 	// Компиляция fingerprint-правил из YAML overlay или дефолтный набор.
@@ -329,7 +360,7 @@ func buildPipeline(cfg *config.Config, loc *time.Location, logger *slog.Logger) 
 		}
 		rules, err = dedup.Compile(raw)
 		if err != nil {
-			return nil, nil, fmt.Errorf("fingerprint profile: %w", err)
+			return nil, nil, nil, nil, fmt.Errorf("fingerprint profile: %w", err)
 		}
 		logger.Info("загружен fingerprint-профиль из YAML", slog.Int("rules", len(rules)))
 	} else {
@@ -342,11 +373,11 @@ func buildPipeline(cfg *config.Config, loc *time.Location, logger *slog.Logger) 
 	var st *state.Store
 	if cfg.StateDBPath != "" {
 		if err := os.MkdirAll(filepath.Dir(cfg.StateDBPath), 0o755); err != nil {
-			return nil, nil, fmt.Errorf("mkdir state dir: %w", err)
+			return nil, nil, nil, nil, fmt.Errorf("mkdir state dir: %w", err)
 		}
 		st, err = state.Open(state.Config{Path: cfg.StateDBPath, Timezone: "UTC"}, logger)
 		if err != nil {
-			return nil, nil, fmt.Errorf("state.Open: %w", err)
+			return nil, nil, nil, nil, fmt.Errorf("state.Open: %w", err)
 		}
 		logger.Info("state открыт", slog.String("path", cfg.StateDBPath))
 	} else {
@@ -371,6 +402,7 @@ func buildPipeline(cfg *config.Config, loc *time.Location, logger *slog.Logger) 
 		TG:       tg,
 		Renderer: rdr,
 		State:    st,
+		Metrics:  mx,
 		Grafana: grafana.Config{
 			BaseURL: cfg.GrafanaURL,
 			OrgID:   cfg.GrafanaOrgID,
@@ -383,9 +415,9 @@ func buildPipeline(cfg *config.Config, loc *time.Location, logger *slog.Logger) 
 		if st != nil {
 			_ = st.Close()
 		}
-		return nil, nil, err
+		return nil, nil, nil, nil, err
 	}
-	return pipe, st, nil
+	return pipe, st, vl, tg, nil
 }
 
 // loadConfigAndLogger — общая инициализация для всех команд, кроме version/help.

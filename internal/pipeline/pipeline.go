@@ -23,6 +23,7 @@ import (
 	"github.com/QCoreTech/log_analyser/internal/collector"
 	"github.com/QCoreTech/log_analyser/internal/dedup"
 	"github.com/QCoreTech/log_analyser/internal/grafana"
+	"github.com/QCoreTech/log_analyser/internal/observability/metrics"
 	"github.com/QCoreTech/log_analyser/internal/render"
 	"github.com/QCoreTech/log_analyser/internal/state"
 	"github.com/QCoreTech/log_analyser/internal/telegram"
@@ -52,8 +53,10 @@ type Dependencies struct {
 	Renderer *render.Renderer
 	// State — опционально; если nil, идемпотентность (FR-12) НЕ
 	// обеспечивается (повторный Run на одно окно отправит дубль).
-	State  *state.Store
-	Logger *slog.Logger
+	State *state.Store
+	// Metrics — опционально; если nil, метрики не обновляются.
+	Metrics *metrics.Metrics
+	Logger  *slog.Logger
 }
 
 // Pipeline — immutable после New.
@@ -130,7 +133,36 @@ type HostResult struct {
 //   - Если падают все хосты или рендер пустой — cover не отправляется,
 //     Run возвращает ошибку.
 //   - Cover/delivery ошибки — фатальны для Run (отчёт не доставлен).
-func (p *Pipeline) Run(ctx context.Context, window Window) (*Result, error) {
+func (p *Pipeline) Run(ctx context.Context, window Window) (res *Result, runErr error) {
+	runStart := time.Now()
+	defer func() {
+		if p.deps.Metrics == nil {
+			return
+		}
+		p.deps.Metrics.DigestCycleDurationSeconds.Observe(time.Since(runStart).Seconds())
+		switch {
+		case runErr != nil:
+			p.deps.Metrics.DigestCycleTotal.WithLabelValues("failed").Inc()
+		case res != nil && res.CoverMsgID == 0 && len(res.MediaMsgIDs) == 0:
+			p.deps.Metrics.DigestCycleTotal.WithLabelValues("skipped").Inc()
+		default:
+			p.deps.Metrics.DigestCycleTotal.WithLabelValues("ok").Inc()
+			p.deps.Metrics.LastSuccessfulDeliveryTS.Set(float64(time.Now().Unix()))
+			if res != nil {
+				p.deps.Metrics.DigestCyclePartialErrors.Add(float64(len(res.Errors)))
+				for host, h := range res.PerHost {
+					if h.TotalError > 0 {
+						p.deps.Metrics.HostRecordsTotal.WithLabelValues(host, "error").Add(float64(h.TotalError))
+					}
+					if h.TotalCritical > 0 {
+						p.deps.Metrics.HostRecordsTotal.WithLabelValues(host, "critical").Add(float64(h.TotalCritical))
+					}
+					p.deps.Metrics.HostIncidentsLastCycle.WithLabelValues(host).Set(float64(h.Incidents))
+				}
+			}
+		}
+	}()
+
 	if !window.From.Before(window.To) {
 		return nil, fmt.Errorf("window From (%s) must be < To (%s)",
 			window.From.Format(time.RFC3339), window.To.Format(time.RFC3339))
@@ -220,7 +252,7 @@ func (p *Pipeline) Run(ctx context.Context, window Window) (*Result, error) {
 		return nil, fmt.Errorf("mkdir %s: %w", p.cfg.ReportsDir, err)
 	}
 	date := window.To.In(p.cfg.TZ).Format("2006-01-02")
-	res := &Result{
+	res = &Result{
 		Window:  window,
 		PerHost: map[string]HostResult{},
 		Errors:  partial,
