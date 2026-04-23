@@ -1,0 +1,59 @@
+# Отчёт по ошибкам: `{{.Host}}`{{with .Label}} ({{.}}){{end}}
+
+**Период:** {{fmtTime .Window.From}} — {{fmtTime .Window.To}} ({{.TZ}})
+**Сгенерирован:** {{fmtTime .GeneratedAt}}
+
+**Итого:** error = **{{.TotalError}}**, critical = **{{.TotalCritical}}**, записей всего: **{{.TotalRecords}}**, инцидентов (fingerprint'ов): **{{.TotalIncidents}}**
+
+{{if eq .TotalRecords 0 -}}
+За окно ошибок уровня `error` / `critical` не обнаружено.
+
+[Открыть в Grafana →]({{.HostDeeplink}})
+{{- else -}}
+
+## Агрегаты по приложениям
+
+{{if .AppTotals -}}
+| app | error | critical | всего |
+|-----|------:|---------:|------:|
+{{range .AppTotals -}}
+| `{{.App}}` | {{.Error}} | {{.Critical}} | {{.Total}} |
+{{end}}
+{{- end}}
+
+## Топ-{{.TopN}} инцидентов
+
+{{range $i, $inc := .TopIncidents -}}
+### {{add $i 1}}. [`{{$inc.App}}`] {{firstLine $inc.NormalizedMsg}}
+
+- **count:** {{$inc.Count}}
+- **level:** `{{$inc.Level}}`
+{{- with $inc.Module}}
+- **module:** `{{.}}`
+{{- end}}
+- **first / last:** {{fmtTime $inc.FirstSeen}} → {{fmtTime $inc.LastSeen}}
+- **fingerprint:** `{{$inc.Fingerprint.Short}}` (уникальных стримов: {{len $inc.StreamIDs}})
+- **Grafana:** [посмотреть {{$inc.Count}} событий →]({{$inc.Deeplink}})
+
+{{with $inc.Examples -}}
+Выдержки:
+
+{{range . -}}
+```
+{{.}}
+```
+
+{{end}}
+{{- end}}
+
+{{end}}
+
+{{- if or .BelowIncidents .BelowRecords -}}
+
+## Прочее (ниже шум-порога K={{.NoiseK}})
+
+**{{len .BelowIncidents}}** инцидентов, **{{.BelowRecords}}** записей. [Открыть в Grafana →]({{.HostDeeplink}})
+
+{{end}}
+{{- end}}
+{{- "" }}

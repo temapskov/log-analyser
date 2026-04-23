@@ -1,0 +1,2 @@
+# Генерируется E2E integration-тестом (internal/render/integration_test.go).
+out/

@@ -101,9 +101,17 @@
 - **TeamLead summary:** `docs/plans/99-teamlead-summary.md`.
 - **Changelog:** `CHANGELOG.md`.
 
-## 6. Открытые блокеры до старта имплементации (из 00-analysis.md §9)
+## 6. Решения TL и открытые блокеры (синхронизировано с docs/plans/99-teamlead-summary.md §2)
 
-Имплементацию v0.1 **нельзя** начинать, пока не закрыты: **OQ-1** (URL VL + auth), **OQ-3** (Grafana URL + DS UID + тип плагина), **OQ-4** (формат файла — `.md` по умолчанию, подтвердить), **OQ-5** (поля стрима в VL), **OQ-8** (один chat_id vs threads). Эскалация — TeamLead / SRE.
+**Закрыто 2026-04-23:**
+- **OQ-1.** VictoriaLogs находится **внутри корпоративной сети, без auth**. `VL_BASIC_USER` / `VL_BASIC_PASS` не задаются; daemon должен работать в той же сети.
+- **OQ-2.** Прокси для VL **не требуется** (`VL_PROXY_URL` в env остаётся пустым).
+- **OQ-3.** Grafana API-доступ есть. UID `victoriametrics-logs-datasource` получен. Конкретные значения лежат в локальном `.env` (gitignored). В Grafana обнаружен дубликат VL-datasource с пустым URL — рекомендовано убрать.
+- **OQ-4.** Формат отчёта — `.md` по умолчанию.
+
+**Остаются открытыми:**
+- **OQ-5** (поля стрима в VL) — снимается preflight-чеком `stream_field_names` при старте daemon.
+- **OQ-8** (один chat_id vs threads) — предложение команды: один чат в v0.1, threads в v0.2.
 
 ## 7. Команды, которые Claude может выполнять сам (без доп. согласования)
 
