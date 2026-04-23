@@ -5,9 +5,6 @@
 //	once --date=DATE    — ручной прогон digest за указанные сутки (формат YYYY-MM-DD в TZ).
 //	health              — проверить reachability VL и Telegram, вывести диагностику.
 //	version             — вывести build-info и выйти.
-//
-// Реализация каждой подкоманды подключается в следующих PR (collector, render,
-// delivery, …). Сейчас — только диспетчер, version и health-stub.
 package main
 
 import (
@@ -16,13 +13,22 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/QCoreTech/log_analyser/internal/collector"
 	"github.com/QCoreTech/log_analyser/internal/config"
+	"github.com/QCoreTech/log_analyser/internal/dedup"
+	"github.com/QCoreTech/log_analyser/internal/grafana"
+	"github.com/QCoreTech/log_analyser/internal/httpclient"
 	"github.com/QCoreTech/log_analyser/internal/observability/logging"
+	"github.com/QCoreTech/log_analyser/internal/pipeline"
+	"github.com/QCoreTech/log_analyser/internal/render"
+	"github.com/QCoreTech/log_analyser/internal/telegram"
 	"github.com/QCoreTech/log_analyser/internal/version"
 )
 
@@ -116,10 +122,8 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		slog.String("hosts", strings.Join(cfg.Hosts, ",")),
 	)
 
-	// TODO(feat/scheduler): подключить scheduler + digest pipeline после
-	// реализации collector/dedup/render/delivery. Пока держим процесс живым
-	// до SIGINT/SIGTERM — это даёт реалистичную проверку graceful shutdown
-	// и настроек logging/config на дымовой запуск контейнера.
+	// TODO(feat/scheduler): подключить cron + pipeline.Run().
+	// Сейчас daemon просто ждёт SIGINT/SIGTERM — проверяется graceful shutdown.
 	<-ctx.Done()
 	logger.Info("daemon stopped", slog.String("reason", ctx.Err().Error()))
 	return exitOK
@@ -143,15 +147,60 @@ func cmdOnce(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 
-	logger.Info("once: plan",
+	loc, err := time.LoadLocation(cfg.TZ)
+	if err != nil {
+		fmt.Fprintf(stderr, "TZ: %v\n", err)
+		return exitConfig
+	}
+	// Окно digest'а: [prev_day 08:00 TZ, date 08:00 TZ).
+	to, err := time.ParseInLocation("2006-01-02", date, loc)
+	if err != nil {
+		fmt.Fprintf(stderr, "once --date: %v\n", err)
+		return exitUsage
+	}
+	// Нормируем на 08:00 локального времени.
+	to = time.Date(to.Year(), to.Month(), to.Day(), 8, 0, 0, 0, loc)
+	from := to.Add(-24 * time.Hour)
+
+	logger.Info("once start",
 		slog.String("date", date),
-		slog.String("tz", cfg.TZ),
+		slog.Time("from", from),
+		slog.Time("to", to),
 		slog.String("hosts", strings.Join(cfg.Hosts, ",")),
 	)
-	// TODO(feat/pipeline): подменить на реальный digest cycle для указанных
-	// суток. Пока стаб — чтобы CLI сигнатура стабилизировалась до кода.
-	fmt.Fprintln(stderr, "once: пока не реализовано — TODO feat/pipeline")
-	return exitRuntime
+
+	pipe, err := buildPipeline(cfg, loc, logger)
+	if err != nil {
+		fmt.Fprintf(stderr, "init pipeline: %v\n", err)
+		return exitRuntime
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+
+	res, err := pipe.Run(ctx, pipeline.Window{From: from, To: to})
+	if err != nil {
+		fmt.Fprintf(stderr, "once failed: %v\n", err)
+		return exitRuntime
+	}
+
+	for _, host := range cfg.Hosts {
+		h := res.PerHost[host]
+		status := "OK"
+		if h.Err != nil {
+			status = "ERR: " + h.Err.Error()
+		}
+		logger.Info("host result",
+			slog.String("host", host),
+			slog.String("file", h.FilePath),
+			slog.Uint64("records", h.TotalRecords),
+			slog.Int("incidents", h.Incidents),
+			slog.String("status", status),
+		)
+	}
+	fmt.Fprintf(stdout, "ok: cover=%d, files=%d, partial_errors=%d\n",
+		res.CoverMsgID, len(res.MediaMsgIDs), len(res.Errors))
+	return exitOK
 }
 
 func cmdHealth(args []string, stdout, stderr io.Writer) int {
@@ -165,15 +214,114 @@ func cmdHealth(args []string, stdout, stderr io.Writer) int {
 	if code != exitOK {
 		return code
 	}
-	// Пока что health = успешная загрузка конфига. В feat/collector и
-	// feat/telegram сюда добавятся реальные пинги VL и TG getMe.
-	logger.Info("health: config ok",
-		slog.Int("hosts", len(cfg.Hosts)),
-		slog.String("vl_url", cfg.VLURL),
-		slog.String("grafana_url", cfg.GrafanaURL),
-	)
-	fmt.Fprintln(stdout, "ok: config loaded (полная проверка — в feat/collector+telegram)")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	vl, tg, err := buildClients(cfg, logger)
+	if err != nil {
+		fmt.Fprintf(stderr, "health: %v\n", err)
+		return exitRuntime
+	}
+
+	if err := vl.Ping(ctx); err != nil {
+		fmt.Fprintf(stderr, "health: VL ping failed: %v\n", err)
+		return exitRuntime
+	}
+	user, err := tg.GetMe(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "health: TG getMe failed: %v\n", err)
+		return exitRuntime
+	}
+	logger.Info("health ok", slog.String("bot", user.Username), slog.Int64("bot_id", user.ID))
+	fmt.Fprintf(stdout, "ok: VL reachable, TG bot=@%s\n", user.Username)
 	return exitOK
+}
+
+// buildClients строит VL + TG клиенты из конфига. Используется health и once.
+func buildClients(cfg *config.Config, logger *slog.Logger) (*collector.Client, *telegram.Client, error) {
+	hc := httpclient.New(httpclient.Config{
+		Timeout:         cfg.VLTimeout,
+		MaxRetries:      cfg.VLMaxRetries,
+		SensitiveValues: cfg.SensitiveValues(),
+	}, logger)
+	vl, err := collector.New(collector.Config{
+		BaseURL:      cfg.VLURL,
+		Username:     cfg.VLBasicUser,
+		Password:     cfg.VLBasicPass,
+		QueryTimeout: 5 * time.Minute,
+	}, hc, logger)
+	if err != nil {
+		return nil, nil, fmt.Errorf("VL: %w", err)
+	}
+	tgHTTP := &http.Client{
+		Timeout:   60 * time.Second,
+		Transport: &http.Transport{Proxy: http.ProxyFromEnvironment},
+	}
+	tg, err := telegram.New(telegram.Config{
+		Token:         cfg.TGBotToken,
+		HTTPTimeout:   60 * time.Second,
+		MaxRetries:    2,
+		MaxRetryAfter: 60 * time.Second,
+	}, tgHTTP, logger)
+	if err != nil {
+		return nil, nil, fmt.Errorf("TG: %w", err)
+	}
+	return vl, tg, nil
+}
+
+func buildPipeline(cfg *config.Config, loc *time.Location, logger *slog.Logger) (*pipeline.Pipeline, error) {
+	vl, tg, err := buildClients(cfg, logger)
+	if err != nil {
+		return nil, err
+	}
+	rdr, err := render.New(cfg.TZ)
+	if err != nil {
+		return nil, fmt.Errorf("renderer: %w", err)
+	}
+
+	// Компиляция fingerprint-правил из YAML overlay или дефолтный набор.
+	var rules []dedup.Rule
+	if overlay := cfg.Overlay.Fingerprint.Normalizers; len(overlay) > 0 {
+		raw := make([]dedup.RawRule, len(overlay))
+		for i, n := range overlay {
+			raw[i] = dedup.RawRule{Name: n.Name, Pattern: n.Pattern, Replace: n.Replace}
+		}
+		rules, err = dedup.Compile(raw)
+		if err != nil {
+			return nil, fmt.Errorf("fingerprint profile: %w", err)
+		}
+		logger.Info("загружен fingerprint-профиль из YAML", slog.Int("rules", len(rules)))
+	} else {
+		rules = dedup.DefaultRules()
+		logger.Info("используется встроенный fingerprint-профиль", slog.Int("rules", len(rules)))
+	}
+
+	return pipeline.New(pipeline.Config{
+		Hosts:            cfg.Hosts,
+		Levels:           cfg.Levels,
+		NoiseK:           cfg.NoiseK,
+		TopN:             cfg.TopN,
+		MaxExamples:      3,
+		ReportsDir:       cfg.ReportsDir,
+		ReportExt:        string(cfg.ReportFormat),
+		TZ:               loc,
+		HostLabels:       cfg.Overlay.HostLabels,
+		ChatID:           cfg.TGChatID,
+		ParseMode:        cfg.TGParseMode,
+		FingerprintRules: rules,
+	}, pipeline.Dependencies{
+		VL:       vl,
+		TG:       tg,
+		Renderer: rdr,
+		Grafana: grafana.Config{
+			BaseURL: cfg.GrafanaURL,
+			OrgID:   cfg.GrafanaOrgID,
+			DSUID:   cfg.GrafanaVLDSUID,
+			DSType:  cfg.GrafanaVLDSType,
+		},
+		Logger: logger,
+	})
 }
 
 // loadConfigAndLogger — общая инициализация для всех команд, кроме version/help.

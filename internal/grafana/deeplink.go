@@ -135,6 +135,34 @@ func (c Config) ExploreURL(expr string, from, to time.Time) (string, error) {
 	return u.String(), nil
 }
 
+// AllHostsExpr — LogsQL-выражение для множества хостов и уровней.
+// Пример: {host=~"t1|ali-t1|t2|aws-t3|t5"} (level:=error OR level:=critical).
+// Если hosts пуст — пустой стрим-фильтр (не должно случиться в проде).
+func AllHostsExpr(hosts, levels []string) string {
+	expr := "{}"
+	if len(hosts) > 0 {
+		expr = fmt.Sprintf(`{host=~"%s"}`, strings.Join(hosts, "|"))
+	}
+	if len(levels) == 0 {
+		return expr
+	}
+	parts := make([]string, 0, len(levels))
+	for _, lvl := range levels {
+		lvl = strings.TrimSpace(lvl)
+		if lvl == "" {
+			continue
+		}
+		parts = append(parts, "level:="+lvl)
+	}
+	if len(parts) == 0 {
+		return expr
+	}
+	if len(parts) == 1 {
+		return expr + " " + parts[0]
+	}
+	return expr + " (" + strings.Join(parts, " OR ") + ")"
+}
+
 // HostExpr — удобный хелпер: собирает LogsQL-выражение для конкретного
 // хоста и списка уровней. Используется render'ом (feat/render) и
 // observability'ю (health). Не включает _time — окно задаётся параметрами

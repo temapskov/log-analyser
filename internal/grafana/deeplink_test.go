@@ -170,6 +170,31 @@ func TestExploreURL_Errors(t *testing.T) {
 	}
 }
 
+func TestAllHostsExpr(t *testing.T) {
+	cases := []struct {
+		name   string
+		hosts  []string
+		levels []string
+		want   string
+	}{
+		{"single host + levels", []string{"t5"}, []string{"error", "critical"}, `{host=~"t5"} (level:=error OR level:=critical)`},
+		{"many hosts", []string{"t1", "ali-t1", "t5"}, []string{"error"}, `{host=~"t1|ali-t1|t5"} level:=error`},
+		{"no levels", []string{"t5"}, nil, `{host=~"t5"}`},
+		{"empty hosts → empty filter", nil, []string{"error"}, `{} level:=error`},
+		{"both empty", nil, nil, `{}`},
+		{"whitespace level skipped", []string{"t5"}, []string{"  ", "error"}, `{host=~"t5"} level:=error`},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			if got := AllHostsExpr(c.hosts, c.levels); got != c.want {
+				t.Errorf("got=%q want=%q", got, c.want)
+			}
+		})
+	}
+}
+
 func TestHostExpr(t *testing.T) {
 	cases := []struct {
 		name   string
