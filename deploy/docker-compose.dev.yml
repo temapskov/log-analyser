@@ -1,0 +1,101 @@
+# =============================================================================
+#  docker-compose — локальная разработка log_analyser
+#  Запуск:  docker compose -f deploy/docker-compose.dev.yml --profile light up
+#  Профили:
+#    * light — только app + prometheus + grafana (требуется реальный VL_URL в .env.dev)
+#    * full  — + victorialogs (локальный mock)
+#  См. docs/plans/12-devops.md §5.
+# =============================================================================
+name: log-analyser-dev
+
+services:
+  log-analyser:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        VERSION: dev
+        COMMIT: local
+        DATE: "2026-01-01T00:00:00Z"
+    image: log-analyser:dev
+    container_name: log-analyser
+    restart: unless-stopped
+    env_file:
+      - ../.env.dev
+    environment:
+      TZ: Europe/Moscow
+      METRICS_ADDR: ":9090"
+    volumes:
+      - log-analyser-state:/var/lib/log_analyser
+    ports:
+      - "9090:9090"
+    healthcheck:
+      # distroless не содержит curl/wget — healthcheck снаружи, через служебный контейнер.
+      # Здесь минимум: проверка TCP порта через bash:5 нет в образе, поэтому отключено.
+      # TODO(devops): добавить sidecar healthchecker, либо compose-level depends_on без healthcheck.
+      disable: true
+    depends_on:
+      prometheus:
+        condition: service_started
+    networks:
+      - observability
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9091:9090"
+    networks:
+      - observability
+
+  grafana:
+    image: grafana/grafana:11.2.2
+    container_name: grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_INSTALL_PLUGINS: victoriametrics-logs-datasource
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - observability
+
+  # --- Профиль "full" — локальный mock VictoriaLogs -------------------------
+  victorialogs:
+    profiles: ["full"]
+    image: victoriametrics/victoria-logs:v1.5.0-victorialogs
+    container_name: victorialogs
+    restart: unless-stopped
+    command:
+      - "--retentionPeriod=7d"
+      - "--storageDataPath=/vldata"
+    volumes:
+      - vl-data:/vldata
+    ports:
+      - "9428:9428"
+    networks:
+      - observability
+
+volumes:
+  log-analyser-state:
+  prometheus-data:
+  grafana-data:
+  vl-data:
+
+networks:
+  observability:
+    driver: bridge
